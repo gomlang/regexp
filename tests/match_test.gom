@@ -1,0 +1,135 @@
+package tests;
+
+use ecosystem::regexp;
+use std::testing;
+use std::text;
+
+fn found(pattern: string, input: string) -> regexp::Match {
+    let regex = testing::expect_ok(regexp::Regex::compile(pattern), "compile");
+    testing::expect_some(testing::expect_ok(regex.find(input), "find"), "match")
+}
+
+#[test]
+fn search_is_leftmost_longest_and_uses_utf8_byte_offsets() -> () {
+    let selected = found("a|aa", "xaaé");
+    testing::assert_eq(selected.span, regexp::Span { start: 1, end: 3 });
+    testing::assert_eq(selected.text("xaaé"), "aa");
+    let unicode = found("界.", "a界🙂b");
+    testing::assert_eq(unicode.span, regexp::Span { start: 1, end: 8 });
+    testing::assert_eq(unicode.text("a界🙂b"), "界🙂");
+    let regex = testing::expect_ok(regexp::Regex::compile("界"), "compile");
+    testing::assert_eq(
+        testing::expect_some(
+            testing::expect_ok(regex.find_from_with("界界", 3, regexp::Limits::new()), "from"),
+            "second",
+        ).span,
+        regexp::Span { start: 3, end: 6 },
+    );
+    testing::assert_eq(
+        testing::expect_err(regex.find_from_with("界界", 1, regexp::Limits::new()), "boundary"),
+        regexp::RuntimeError::InvalidOffset,
+    );
+}
+
+#[test]
+fn captures_and_assertions_are_preserved() -> () {
+    let input = "--aab!";
+    let selected = found("\\b(a+)(b?)\\b", input);
+    testing::assert_eq(selected.span, regexp::Span { start: 2, end: 5 });
+    testing::assert(selected.capture(input, 0) == Option::Some("aab"));
+    testing::assert(selected.capture(input, 1) == Option::Some("aa"));
+    testing::assert(selected.capture(input, 2) == Option::Some("b"));
+    testing::assert(selected.capture(input, 3) == Option::None);
+    let absent = found("(a)(b)?", "a");
+    testing::assert(absent.capture("a", 2) == Option::None);
+    let anchored = testing::expect_ok(regexp::Regex::compile("^go$"), "anchor");
+    testing::assert(testing::expect_ok(anchored.find("xgo"), "anchored").is_none());
+    testing::assert_eq(found("^go$", "go").text("go"), "go");
+}
+
+#[test]
+fn empty_matches_advance_by_complete_scalars() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile(""), "empty regex");
+    let matches = testing::expect_ok(regex.find_all("界a"), "all");
+    testing::assert_eq(matches.len(), 3);
+    testing::assert_eq(matches[0].span.start, 0);
+    testing::assert_eq(matches[1].span.start, 3);
+    testing::assert_eq(matches[2].span.start, 4);
+    let repeat = testing::expect_ok(regexp::Regex::compile("a*"), "repeat");
+    let repeated = testing::expect_ok(repeat.find_all("a"), "all repeat");
+    testing::assert_eq(repeated.len(), 1);
+    testing::assert_eq(repeated[0].span, regexp::Span { start: 0, end: 1 });
+}
+
+#[test]
+fn replacement_and_split_use_captures_and_output_bounds() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(\\w+)-(\\d+)"), "compile");
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all("a-12 b-3", "$2/${1} $$"), "replace"),
+        "12/a $ 3/b $",
+    );
+    testing::assert(
+        testing::expect_ok(regex.split("a-12 b-3"), "split") == Vec::from_array(["", " ", ""]),
+    );
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all("a-12", "$3"), "invalid capture"),
+        regexp::RuntimeError::InvalidReplacement,
+    );
+    let empty = testing::expect_ok(regexp::Regex::compile(""), "empty");
+    testing::assert_eq(testing::expect_ok(empty.replace_all("界a", "-"), "insert"), "-界-a-");
+    testing::assert(
+        testing::expect_ok(empty.split("界a"), "split scalar") == Vec::from_array(["界", "a"]),
+    );
+    let short = regexp::Limits { max_output_bytes: 3, ..regexp::Limits::new() };
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all_with("a-12", "long", short), "output"),
+        regexp::RuntimeError::OutputLimit,
+    );
+}
+
+#[test]
+fn runtime_limits_reject_work_input_and_match_growth() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "compile");
+    let defaults = regexp::Limits::new();
+    testing::assert_eq(
+        testing::expect_err(
+            regex.find_with("bbb", regexp::Limits { max_work: 2, ..defaults }),
+            "work",
+        ),
+        regexp::RuntimeError::WorkLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.find_with("bbb", regexp::Limits { max_input_bytes: 2, ..defaults }),
+            "input",
+        ),
+        regexp::RuntimeError::InputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.find_all_with("a", regexp::Limits { max_matches: 0, ..defaults }),
+            "matches",
+        ),
+        regexp::RuntimeError::MatchLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.find_with("", regexp::Limits { max_work: 0, ..defaults }),
+            "limits",
+        ),
+        regexp::RuntimeError::InvalidLimits,
+    );
+    let adversarial = testing::expect_ok(regexp::Regex::compile("(a?)*b"), "nullable loop");
+    testing::assert(
+        testing::expect_ok(adversarial.find("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "linear scan").is_none(),
+    );
+    let input = text::StringBuilder::new();
+    for _ in 0..256 {
+        input.write_string("a");
+    }
+    let fallback = testing::expect_ok(regexp::Regex::compile("a.*b|a"), "fallback");
+    testing::assert_eq(
+        testing::expect_err(fallback.find_all(input.finish()), "aggregate work bound"),
+        regexp::RuntimeError::WorkLimit,
+    );
+}

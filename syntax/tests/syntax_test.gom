@@ -1,0 +1,132 @@
+package tests;
+
+use ecosystem::regexp::syntax;
+use std::testing;
+
+#[test]
+fn parser_preserves_capture_order_and_assertions() -> () {
+    let parsed = testing::expect_ok(syntax::parse("^(a(?:b|c)+)(d?)$"), "parse");
+    testing::assert_eq(parsed.capture_count, 2);
+    match parsed.expression {
+        syntax::Expression::Concat(parts) => {
+            testing::assert_eq(parts.len(), 4);
+            match parts[0] {
+                syntax::Expression::Assert(syntax::Assertion::StartText) => (),
+                _ => testing::assert(false),
+            }
+            match parts[1] {
+                syntax::Expression::Capture(_, 1) => (),
+                _ => testing::assert(false),
+            }
+            match parts[2] {
+                syntax::Expression::Capture(_, 2) => (),
+                _ => testing::assert(false),
+            }
+            match parts[3] {
+                syntax::Expression::Assert(syntax::Assertion::EndText) => (),
+                _ => testing::assert(false),
+            }
+        },
+        _ => testing::assert(false),
+    }
+}
+
+#[test]
+fn simplification_flattens_sequences_without_losing_capture_identity() -> () {
+    let parsed = syntax::simplify(
+        testing::expect_ok(syntax::parse("a(?:)(?:b(?:c))(d){1}"), "parse"),
+    );
+    testing::assert_eq(parsed.capture_count, 1);
+    match parsed.expression {
+        syntax::Expression::Concat(parts) => {
+            testing::assert_eq(parts.len(), 4);
+            match parts[3] {
+                syntax::Expression::Capture(_, 1) => (),
+                _ => testing::assert(false),
+            }
+        },
+        _ => testing::assert(false),
+    }
+    let empty = syntax::simplify(testing::expect_ok(syntax::parse("(?:a){0}"), "zero"));
+    match empty.expression {
+        syntax::Expression::Empty => (),
+        _ => testing::assert(false),
+    }
+}
+
+#[test]
+fn compiled_program_has_checked_targets_and_capture_tags() -> () {
+    let program = testing::expect_ok(syntax::compile("^(ab|[0-9]+)\\b$"), "compile");
+    testing::assert_eq(program.capture_count, 1);
+    testing::assert(program.start >= 0 && program.start < program.state_count());
+    let mut accepts = 0;
+    let mut starts = 0;
+    let mut ends = 0;
+    let mut assertions = 0;
+    for index in 0..program.state_count() {
+        match program.states.get(index) {
+            syntax::State::Split(targets) => {
+                testing::assert(targets.len() > 0);
+                for target_index in 0..targets.len() {
+                    let target = targets.get(target_index);
+                    testing::assert(target >= 0 && target < program.state_count());
+                }
+            },
+            syntax::State::Consume(_, next) => testing::assert(
+                next >= 0 && next < program.state_count(),
+            ),
+            syntax::State::Assert(_, next) => {
+                assertions += 1;
+                testing::assert(next >= 0 && next < program.state_count());
+            },
+            syntax::State::CaptureStart(1, next) => {
+                starts += 1;
+                testing::assert(next >= 0 && next < program.state_count());
+            },
+            syntax::State::CaptureEnd(1, next) => {
+                ends += 1;
+                testing::assert(next >= 0 && next < program.state_count());
+            },
+            syntax::State::Accept => {
+                accepts += 1;
+            },
+            _ => testing::assert(false),
+        }
+    }
+    testing::assert_eq(accepts, 1);
+    testing::assert_eq(starts, 1);
+    testing::assert_eq(ends, 1);
+    testing::assert_eq(assertions, 3);
+}
+
+#[test]
+fn malformed_patterns_have_byte_offsets() -> () {
+    let trailing = testing::expect_err(syntax::parse("界\\"), "trailing escape");
+    testing::assert_eq(trailing.offset, 4);
+    testing::assert_err(syntax::parse("[z-a]"));
+    testing::assert_err(syntax::parse("(abc"));
+    testing::assert_err(syntax::parse("a{2,1}"));
+    testing::assert_err(syntax::parse("a*?"));
+    testing::assert_err(syntax::parse("(?=x)"));
+    testing::assert_err(syntax::parse("[a&&b]"));
+    testing::assert_err(syntax::parse("\\u{110000}"));
+    testing::assert_err(syntax::parse("\\p{Unknown}"));
+    testing::assert_err(syntax::parse("\\1"));
+}
+
+#[test]
+fn explicit_limits_bound_input_ast_and_compilation() -> () {
+    let defaults = syntax::Limits::new();
+    testing::assert_err(
+        syntax::parse_with("abc", syntax::Limits { max_pattern_bytes: 2, ..defaults }),
+    );
+    testing::assert_err(syntax::parse_with("(a)", syntax::Limits { max_captures: 0, ..defaults }));
+    testing::assert_err(
+        syntax::parse_with("(a)", syntax::Limits { max_depth: 1, max_nodes: 1, ..defaults }),
+    );
+    testing::assert_err(syntax::parse_with("a{3}", syntax::Limits { max_repeat: 2, ..defaults }));
+    testing::assert_err(syntax::compile_with("abc", syntax::Limits { max_states: 2, ..defaults }));
+    testing::assert_err(syntax::compile_with("(a?)*", syntax::Limits { max_states: 3, ..defaults }));
+    testing::assert_err(syntax::parse_with("", syntax::Limits { max_depth: 0, ..defaults }));
+    testing::assert_eq(testing::expect_ok(syntax::compile(""), "empty").state_count(), 1);
+}
