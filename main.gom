@@ -1,0 +1,30 @@
+package main;
+
+use ecosystem::regexp;
+use ecosystem::regexp::syntax;
+use std::testing;
+
+pub fn exercise() -> () {
+    let parsed = testing::expect_ok(syntax::parse("^(go|goml)[0-9]+$"), "parse");
+    testing::assert_eq(parsed.capture_count, 1);
+    let program = testing::expect_ok(syntax::compile("^(go|goml)[0-9]+$"), "compile");
+    testing::assert(program.state_count() > 1);
+    testing::assert(program.start >= 0 && program.start < program.state_count());
+    testing::assert_err(syntax::compile("(?=bad)"));
+    let regex = testing::expect_ok(regexp::Regex::compile("(go|goml)[0-9]+"), "regex");
+    let selected = testing::expect_some(
+        testing::expect_ok(regex.find("try goml42 now"), "find"),
+        "match",
+    );
+    testing::assert_eq(selected.span, regexp::Span { start: 4, end: 10 });
+    testing::assert(selected.capture("try goml42 now", 1) == Option::Some("goml"));
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all("go1 goml42", "[$1]"), "replace"),
+        "[go] [goml]",
+    );
+}
+
+fn main() -> () {
+    exercise();
+    println("regexp syntax consumer: ok");
+}
