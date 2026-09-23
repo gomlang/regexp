@@ -1,0 +1,358 @@
+package regexp;
+
+use module::syntax;
+use std::unicode;
+
+struct Thread {
+    state: isize,
+    start: isize,
+    slots: Vec[isize],
+}
+
+fn next_boundary(input: string, offset: isize) -> isize {
+    let mut next = offset + 1;
+    while next < input.byte_len() && !input.is_char_boundary(next) {
+        next += 1;
+    }
+    next
+}
+
+fn spend(work: Ref[isize], amount: isize, limit: isize) -> Result[(), RuntimeError] {
+    if amount > limit - work.get() {
+        return Result::Err(RuntimeError::WorkLimit)
+    }
+    work.set(work.get() + amount);
+    Result::Ok(())
+}
+
+fn capped_product(left: isize, right: isize, cap: isize) -> isize {
+    if left > cap / right {
+        cap
+    } else {
+        left * right
+    }
+}
+
+fn work_budget(regex: Regex, input: string, maximum: isize) -> isize {
+    let mut class_parts = 0;
+    for index in 0..regex.state_count() {
+        if let syntax::State::Consume(class, _) = regex.program.states.get(index) {
+            if class.parts.len() > class_parts {
+                class_parts = class.parts.len();
+            }
+        }
+    }
+    let per_state = capped_product(regex.capture_count() + 1, 64 + class_parts, maximum);
+    let per_position = capped_product(regex.state_count(), per_state, maximum);
+    capped_product(input.byte_len() + 1, per_position, maximum)
+}
+
+fn copy_slots(slots: Vec[isize], work: Ref[isize], limit: isize) -> Result[Vec[isize], RuntimeError] {
+    spend(work, slots.len(), limit)?;
+    let result: Vec[isize] = Vec::with_capacity(slots.len());
+    for value in slots {
+        result.push(value);
+    }
+    Result::Ok(result)
+}
+
+fn new_slots(captures: isize, work: Ref[isize], limit: isize) -> Result[Vec[isize], RuntimeError] {
+    if captures > (limit - 1) / 2 {
+        return Result::Err(RuntimeError::WorkLimit)
+    }
+    let count = (captures + 1) * 2;
+    spend(work, count, limit)?;
+    let result: Vec[isize] = Vec::with_capacity(count);
+    for _ in 0..count {
+        result.push(-1);
+    }
+    Result::Ok(result)
+}
+
+fn ascii_word(value: char) -> bool {
+    (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
+        || (value >= '0' && value <= '9')
+        || value == '_'
+}
+
+fn previous_word(input: string, position: isize) -> bool {
+    if position == 0 {
+        return false
+    }
+    let mut start = position - 1;
+    while start > 0 && !input.is_char_boundary(start) {
+        start -= 1;
+    }
+    ascii_word(input.get(start))
+}
+
+fn assertion_holds(assertion: syntax::Assertion, input: string, position: isize) -> bool {
+    match assertion {
+        syntax::Assertion::StartText => position == 0,
+        syntax::Assertion::EndText => position == input.byte_len(),
+        syntax::Assertion::WordBoundary => previous_word(input, position)
+            != (position < input.byte_len() && ascii_word(input.get(position))),
+        syntax::Assertion::NonWordBoundary => previous_word(input, position)
+            == (position < input.byte_len() && ascii_word(input.get(position))),
+    }
+}
+
+fn part_matches(part: syntax::ClassPart, value: char) -> bool {
+    match part {
+        syntax::ClassPart::Range(start, end) => value >= start && value <= end,
+        syntax::ClassPart::Digit(negative) => (value >= '0' && value <= '9') != negative,
+        syntax::ClassPart::Word(negative) => ascii_word(value) != negative,
+        syntax::ClassPart::Space(negative) => (value == ' ' || value == '\t' || value == '\n'
+            || value == '\r'
+            || value == '\u000b'
+            || value == '\u000c')
+            != negative,
+        syntax::ClassPart::Property(name, negative) => {
+            let matched = match name {
+                "L" | "Letter" => unicode::is_letter(value),
+                "N" | "Number" => unicode::is_number(value),
+                "White_Space" => unicode::is_whitespace(value),
+                "Lowercase" => unicode::is_lowercase(value),
+                "Uppercase" => unicode::is_uppercase(value),
+                "ASCII" => value.to_u32() < 128,
+                _ => false,
+            };
+            matched != negative
+        },
+    }
+}
+
+fn class_matches(class: syntax::CharacterClass, value: char) -> bool {
+    let mut found = false;
+    for index in 0..class.parts.len() {
+        if part_matches(class.parts.get(index), value) {
+            found = true;
+            break;
+        }
+    }
+    found != class.negated
+}
+
+fn closure(
+    program: syntax::Program,
+    input: string,
+    position: isize,
+    seeds: Vec[Thread],
+    work: Ref[isize],
+    limit: isize,
+) -> Result[Vec[Thread], RuntimeError] {
+    spend(work, program.state_count(), limit)?;
+    let stack: Vec[Thread] = Vec::new();
+    let mut index = seeds.len();
+    while index > 0 {
+        index -= 1;
+        stack.push(seeds[index]);
+    }
+    let visited: Vec[bool] = Vec::with_capacity(program.state_count());
+    for _ in 0..program.state_count() {
+        visited.push(false);
+    }
+    let active: Vec[Thread] = Vec::new();
+    while let Some(thread) = stack.pop() {
+        spend(work, 1, limit)?;
+        if visited[thread.state] {
+            continue;
+        }
+        visited[thread.state] = true;
+        match program.states.get(thread.state) {
+            syntax::State::Split(targets) => {
+                let mut target = targets.len();
+                while target > 0 {
+                    target -= 1;
+                    stack.push(
+                        Thread {
+                            state: targets.get(target),
+                            start: thread.start,
+                            slots: copy_slots(thread.slots, work, limit)?,
+                        },
+                    );
+                }
+            },
+            syntax::State::Assert(assertion, next) => {
+                if assertion_holds(assertion, input, position) {
+                    stack.push(Thread { state: next, start: thread.start, slots: thread.slots });
+                }
+            },
+            syntax::State::CaptureStart(capture, next) => {
+                let slots = copy_slots(thread.slots, work, limit)?;
+                slots[capture * 2] = position;
+                stack.push(Thread { state: next, start: thread.start, slots });
+            },
+            syntax::State::CaptureEnd(capture, next) => {
+                let slots = copy_slots(thread.slots, work, limit)?;
+                slots[capture * 2 + 1] = position;
+                stack.push(Thread { state: next, start: thread.start, slots });
+            },
+            _ => active.push(thread),
+        }
+    }
+    Result::Ok(active)
+}
+
+fn matched(thread: Thread, end: isize, captures: isize) -> Match {
+    let values: Vec[Option[Span]] = Vec::with_capacity(captures + 1);
+    values.push(Option::Some(Span { start: thread.start, end }));
+    for index in 1..captures + 1 {
+        let start = thread.slots[index * 2];
+        let finish = thread.slots[index * 2 + 1];
+        values.push(
+            if start >= 0 && finish >= start {
+                Option::Some(Span { start, end: finish })
+            } else {
+                Option::None
+            },
+        );
+    }
+    Match { span: Span { start: thread.start, end }, captures: values }
+}
+
+fn better(candidate: Match, current: Match) -> bool {
+    candidate.span.start < current.span.start
+        || (candidate.span.start == current.span.start && candidate.span.end > current.span.end)
+}
+
+fn find_from(regex: Regex, input: string, offset: isize, budget: isize, work: Ref[isize]) -> Result[
+    Option[Match],
+    RuntimeError,
+] {
+    let mut position = offset;
+    let mut seeds: Vec[Thread] = Vec::new();
+    let mut best: Option[Match] = Option::None;
+    loop {
+        seeds.push(
+            Thread {
+                state: regex.program.start,
+                start: position,
+                slots: new_slots(regex.capture_count(), work, budget)?,
+            },
+        );
+        let active = closure(regex.program, input, position, seeds, work, budget)?;
+        let mut earlier_live = false;
+        for thread in active {
+            match regex.program.states.get(thread.state) {
+                syntax::State::Accept => {
+                    spend(work, regex.capture_count() + 1, budget)?;
+                    let candidate = matched(thread, position, regex.capture_count());
+                    if let Some(current) = best {
+                        if better(candidate, current) {
+                            best = Option::Some(candidate);
+                        }
+                    } else {
+                        best = Option::Some(candidate);
+                    }
+                },
+                _ => (),
+            }
+        }
+        let next: Vec[Thread] = Vec::new();
+        if position < input.byte_len() {
+            let value = input.get(position);
+            for thread in active {
+                if let syntax::State::Consume(class, target) = regex.program.states.get(
+                    thread.state,
+                ) {
+                    spend(work, class.parts.len() + 1, budget)?;
+                    if class_matches(class, value) {
+                        next.push(
+                            Thread { state: target, start: thread.start, slots: thread.slots },
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(current) = best {
+            for thread in next {
+                if thread.start <= current.span.start {
+                    earlier_live = true;
+                    break;
+                }
+            }
+            if !earlier_live {
+                return Result::Ok(best)
+            }
+        }
+        if position == input.byte_len() {
+            break;
+        }
+        seeds = next;
+        position = next_boundary(input, position);
+    }
+    Result::Ok(best)
+}
+
+fn validate_input(input: string, offset: isize, limits: Limits) -> Result[(), RuntimeError] {
+    limits.validate()?;
+    if input.byte_len() > limits.max_input_bytes {
+        return Result::Err(RuntimeError::InputLimit)
+    }
+    if offset < 0 || offset > input.byte_len() || !input.is_char_boundary(offset) {
+        return Result::Err(RuntimeError::InvalidOffset)
+    }
+    Result::Ok(())
+}
+
+impl Regex {
+    pub fn find_with(self: Regex, input: string, limits: Limits) -> Result[
+        Option[Match],
+        RuntimeError,
+    ] {
+        self.find_from_with(input, 0, limits)
+    }
+
+    pub fn find(self: Regex, input: string) -> Result[Option[Match], RuntimeError] {
+        self.find_with(input, Limits::new())
+    }
+
+    pub fn find_from_with(self: Regex, input: string, offset: isize, limits: Limits) -> Result[
+        Option[Match],
+        RuntimeError,
+    ] {
+        validate_input(input, offset, limits)?;
+        find_from(self, input, offset, work_budget(self, input, limits.max_work), Ref::new(0))
+    }
+
+    pub fn find_all_with(self: Regex, input: string, limits: Limits) -> Result[
+        Vec[Match],
+        RuntimeError,
+    ] {
+        validate_input(input, 0, limits)?;
+        let work = Ref::new(0);
+        let budget = work_budget(self, input, limits.max_work);
+        let result: Vec[Match] = Vec::new();
+        let mut offset = 0;
+        let mut previous_end = -1;
+        loop {
+            let next = find_from(self, input, offset, budget, work)?;
+            let item = match next {
+                Some(value) => value,
+                None => break,
+            };
+            let empty = item.span.start == item.span.end;
+            if !empty || item.span.start != previous_end {
+                if result.len() >= limits.max_matches {
+                    return Result::Err(RuntimeError::MatchLimit)
+                }
+                result.push(item);
+            }
+            previous_end = item.span.end;
+            if empty {
+                if item.span.end == input.byte_len() {
+                    break;
+                }
+                offset = next_boundary(input, item.span.end);
+            } else {
+                offset = item.span.end;
+            }
+        }
+        Result::Ok(result)
+    }
+
+    pub fn find_all(self: Regex, input: string) -> Result[Vec[Match], RuntimeError] {
+        self.find_all_with(input, Limits::new())
+    }
+}

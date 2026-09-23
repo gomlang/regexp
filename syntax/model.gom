@@ -1,0 +1,116 @@
+package syntax;
+
+pub enum ClassPart {
+    Range(char, char),
+    Digit(bool),
+    Word(bool),
+    Space(bool),
+    Property(string, bool),
+}
+
+pub struct CharacterClass {
+    pub parts: FrozenVec[ClassPart],
+    pub negated: bool,
+}
+
+pub enum Assertion {
+    StartText,
+    EndText,
+    WordBoundary,
+    NonWordBoundary,
+}
+
+pub enum Expression {
+    Empty,
+    Class(CharacterClass),
+    Assert(Assertion),
+    Concat(Vec[Expression]),
+    Alternate(Vec[Expression]),
+    Repeat(Ref[Expression], isize, Option[isize]),
+    Capture(Ref[Expression], isize),
+}
+
+pub struct Error {
+    pub offset: isize,
+    pub message: string,
+}
+
+impl ToString for Error {
+    fn to_string(self: Error) -> string {
+        f"regexp syntax at byte {self.offset}: {self.message}"
+    }
+}
+
+impl Debug for Error {
+    fn debug(self: Error) -> string {
+        self.to_string()
+    }
+}
+
+pub struct Limits {
+    pub max_pattern_bytes: isize,
+    pub max_depth: isize,
+    pub max_repeat: isize,
+    pub max_captures: isize,
+    pub max_nodes: isize,
+    pub max_states: isize,
+}
+
+impl Limits {
+    pub fn new() -> Limits {
+        Limits {
+            max_pattern_bytes: 65536,
+            max_depth: 64,
+            max_repeat: 1024,
+            max_captures: 1024,
+            max_nodes: 16384,
+            max_states: 16384,
+        }
+    }
+
+    pub fn validate(self: Limits) -> Result[(), Error] {
+        if self.max_pattern_bytes < 0 || self.max_pattern_bytes > 1048576 || self.max_depth < 1
+            || self.max_depth > 256
+            || self.max_repeat < 1
+            || self.max_repeat > 1000000
+            || self.max_captures < 0
+            || self.max_captures > 1000000
+            || self.max_nodes < 1
+            || self.max_nodes > 1000000
+            || self.max_states < 1
+            || self.max_states > 1000000 {
+            return Result::Err(Error { offset: 0, message: "invalid regex syntax limits" })
+        }
+        Result::Ok(())
+    }
+}
+
+pub struct Parsed {
+    pub expression: Expression,
+    pub capture_count: isize,
+}
+
+pub enum State {
+    Split(FrozenVec[isize]),
+    Consume(CharacterClass, isize),
+    Assert(Assertion, isize),
+    CaptureStart(isize, isize),
+    CaptureEnd(isize, isize),
+    Accept,
+}
+
+pub struct Program {
+    pub states: FrozenVec[State],
+    pub start: isize,
+    pub capture_count: isize,
+}
+
+impl Program {
+    pub fn state_count(self: Program) -> isize {
+        self.states.len()
+    }
+}
+
+fn problem(offset: isize, message: string) -> Error {
+    Error { offset, message }
+}

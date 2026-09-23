@@ -1,0 +1,143 @@
+package syntax;
+
+fn simplified(value: Expression) -> Expression {
+    match value {
+        Empty | Class(_) | Assert(_) => value,
+        Capture(inner, index) => Expression::Capture(Ref::new(simplified(inner.get())), index),
+        Concat(parts) => {
+            let result: Vec[Expression] = Vec::new();
+            for part in parts {
+                match simplified(part) {
+                    Empty => (),
+                    Concat(nested) => for item in nested {
+                        result.push(item);
+                    },
+                    other => result.push(other),
+                }
+            }
+            if result.is_empty() {
+                Expression::Empty
+            } else if result.len() == 1 {
+                result[0]
+            } else {
+                Expression::Concat(result)
+            }
+        },
+        Alternate(parts) => {
+            let result: Vec[Expression] = Vec::new();
+            for part in parts {
+                match simplified(part) {
+                    Alternate(nested) => for item in nested {
+                        result.push(item);
+                    },
+                    other => result.push(other),
+                }
+            }
+            if result.len() == 1 {
+                result[0]
+            } else {
+                Expression::Alternate(result)
+            }
+        },
+        Repeat(inner, minimum, maximum) => {
+            let part = simplified(inner.get());
+            let empty = match part {
+                Empty => true,
+                _ => false,
+            };
+            if maximum == Option::Some(0) || empty {
+                Expression::Empty
+            } else if minimum == 1 && maximum == Option::Some(1) {
+                part
+            } else {
+                Expression::Repeat(Ref::new(part), minimum, maximum)
+            }
+        },
+    }
+}
+
+pub fn simplify(parsed: Parsed) -> Parsed {
+    Parsed { expression: simplified(parsed.expression), capture_count: parsed.capture_count }
+}
+
+struct Compiler {
+    states: Vec[State],
+    limits: Limits,
+    work: Ref[isize],
+}
+
+impl Compiler {
+    fn push(self: Compiler, state: State) -> Result[isize, Error] {
+        if self.states.len() >= self.limits.max_states {
+            return Result::Err(problem(0, "automaton state limit exceeded"))
+        }
+        let index = self.states.len();
+        self.states.push(state);
+        Result::Ok(index)
+    }
+
+    fn expression(self: Compiler, value: Expression, next: isize) -> Result[isize, Error] {
+        if self.work.get() >= self.limits.max_states * 8 {
+            return Result::Err(problem(0, "automaton expansion limit exceeded"))
+        }
+        self.work.set(self.work.get() + 1);
+        match value {
+            Empty => Result::Ok(next),
+            Class(class) => self.push(State::Consume(class, next)),
+            Assert(assertion) => self.push(State::Assert(assertion, next)),
+            Capture(inner, index) => {
+                let end = self.push(State::CaptureEnd(index, next))?;
+                let start = self.expression(inner.get(), end)?;
+                self.push(State::CaptureStart(index, start))
+            },
+            Concat(parts) => {
+                let mut start = next;
+                let mut index = parts.len();
+                while index > 0 {
+                    index -= 1;
+                    start = self.expression(parts[index], start)?;
+                }
+                Result::Ok(start)
+            },
+            Alternate(parts) => {
+                let starts: Vec[isize] = Vec::new();
+                for part in parts {
+                    starts.push(self.expression(part, next)?);
+                }
+                self.push(State::Split(starts.freeze()))
+            },
+            Repeat(inner, minimum, maximum) => {
+                let mut start = next;
+                if let Some(maximum) = maximum {
+                    for _ in minimum..maximum {
+                        let branch = self.expression(inner.get(), start)?;
+                        start = self.push(State::Split(Vec::from_array([branch, start]).freeze()))?;
+                    }
+                } else {
+                    let head = self.push(State::Split(Vec::new().freeze()))?;
+                    let branch = self.expression(inner.get(), head)?;
+                    self.states[head] = State::Split(Vec::from_array([branch, next]).freeze());
+                    start = head;
+                }
+                for _ in 0..minimum {
+                    start = self.expression(inner.get(), start)?;
+                }
+                Result::Ok(start)
+            },
+        }
+    }
+}
+
+pub fn compile_with(pattern: string, limits: Limits) -> Result[Program, Error] {
+    let parsed = simplify(parse_with(pattern, limits)?);
+    let compiler = Compiler { states: Vec::new(), limits, work: Ref::new(0) };
+    let accept = compiler.push(State::Accept)?;
+    let start = compiler.expression(parsed.expression, accept)?;
+    Result::Ok(
+        Program { states: compiler.states.freeze(), start, capture_count: parsed.capture_count },
+    )
+}
+
+pub fn compile(pattern: string) -> Result[Program, Error] {
+    compile_with(pattern, Limits::new())
+}

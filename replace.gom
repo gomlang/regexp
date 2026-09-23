@@ -1,0 +1,163 @@
+package regexp;
+
+use std::text;
+
+enum ReplacementPart {
+    Literal(string),
+    Capture(isize),
+}
+
+fn replacement_parts(template: string, captures: isize) -> Result[
+    Vec[ReplacementPart],
+    RuntimeError,
+] {
+    let parts: Vec[ReplacementPart] = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < template.byte_len() {
+        if template.byte_get(index) != b'$' {
+            index += 1;
+            continue;
+        }
+        if index > start {
+            parts.push(ReplacementPart::Literal(template.byte_slice(start, index)));
+        }
+        index += 1;
+        if index == template.byte_len() {
+            return Result::Err(RuntimeError::InvalidReplacement)
+        }
+        if template.byte_get(index) == b'$' {
+            parts.push(ReplacementPart::Literal("$"));
+            index += 1;
+        } else {
+            let braced = template.byte_get(index) == b'{';
+            if braced {
+                index += 1;
+            }
+            let mut number = 0;
+            let mut digits = 0;
+            while index < template.byte_len() {
+                let ch = template.byte_get(index);
+                if ch < b'0' || ch > b'9' {
+                    break;
+                }
+                let digit = (ch - b'0').to_isize();
+                if digit > captures || number > (captures - digit) / 10 {
+                    return Result::Err(RuntimeError::InvalidReplacement)
+                }
+                number = number * 10 + digit;
+                digits += 1;
+                index += 1;
+                if !braced {
+                    break;
+                }
+            }
+            if digits == 0 {
+                return Result::Err(RuntimeError::InvalidReplacement)
+            }
+            if braced {
+                if index == template.byte_len() || template.byte_get(index) != b'}' {
+                    return Result::Err(RuntimeError::InvalidReplacement)
+                }
+                index += 1;
+            }
+            parts.push(ReplacementPart::Capture(number));
+        }
+        start = index;
+    }
+    if start < template.byte_len() {
+        parts.push(ReplacementPart::Literal(template.byte_slice(start, template.byte_len())));
+    }
+    Result::Ok(parts)
+}
+
+fn append_bounded(output: text::StringBuilder, value: string, maximum: isize) -> Result[
+    (),
+    RuntimeError,
+] {
+    if value.byte_len() > maximum - output.len() {
+        return Result::Err(RuntimeError::OutputLimit)
+    }
+    output.write_string(value);
+    Result::Ok(())
+}
+
+impl Regex {
+    pub fn replace_all_with(self: Regex, input: string, replacement: string, limits: Limits) -> Result[
+        string,
+        RuntimeError,
+    ] {
+        limits.validate()?;
+        if replacement.byte_len() > limits.max_input_bytes {
+            return Result::Err(RuntimeError::InputLimit)
+        }
+        let parts = replacement_parts(replacement, self.capture_count())?;
+        let matches = self.find_all_with(input, limits)?;
+        let output = text::StringBuilder::new();
+        let mut cursor = 0;
+        for found in matches {
+            append_bounded(
+                output,
+                input.byte_slice(cursor, found.span.start),
+                limits.max_output_bytes,
+            )?;
+            for part in parts {
+                match part {
+                    ReplacementPart::Literal(value) => append_bounded(
+                        output,
+                        value,
+                        limits.max_output_bytes,
+                    )?,
+                    ReplacementPart::Capture(index) => append_bounded(
+                        output,
+                        found.capture(input, index).unwrap_or(""),
+                        limits.max_output_bytes,
+                    )?,
+                }
+            }
+            cursor = found.span.end;
+        }
+        append_bounded(output, input.byte_slice(cursor, input.byte_len()), limits.max_output_bytes)?;
+        Result::Ok(output.finish())
+    }
+
+    pub fn replace_all(self: Regex, input: string, replacement: string) -> Result[
+        string,
+        RuntimeError,
+    ] {
+        self.replace_all_with(input, replacement, Limits::new())
+    }
+
+    pub fn split_with(self: Regex, input: string, limits: Limits) -> Result[
+        Vec[string],
+        RuntimeError,
+    ] {
+        let matches = self.find_all_with(input, limits)?;
+        let parts: Vec[string] = Vec::new();
+        let mut cursor = 0;
+        let mut bytes = 0;
+        for found in matches {
+            if found.span.start == found.span.end
+                && (found.span.start == 0 || found.span.start == input.byte_len()) {
+                continue;
+            }
+            let piece = input.byte_slice(cursor, found.span.start);
+            if piece.byte_len() > limits.max_output_bytes - bytes {
+                return Result::Err(RuntimeError::OutputLimit)
+            }
+            bytes += piece.byte_len();
+            parts.push(piece);
+            cursor = found.span.end;
+        }
+        let tail = input.byte_slice(cursor, input.byte_len());
+        if tail.byte_len() > limits.max_output_bytes - bytes {
+            return Result::Err(RuntimeError::OutputLimit)
+        }
+        parts.push(tail);
+        Result::Ok(parts)
+    }
+
+    pub fn split(self: Regex, input: string) -> Result[Vec[string], RuntimeError] {
+        self.split_with(input, Limits::new())
+    }
+}

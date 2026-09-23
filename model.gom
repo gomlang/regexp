@@ -1,0 +1,114 @@
+package regexp;
+
+use module::syntax;
+
+#[derive(Debug, PartialEq)]
+pub struct Span {
+    pub start: isize,
+    pub end: isize,
+}
+
+pub struct Match {
+    pub span: Span,
+    pub captures: Vec[Option[Span]],
+}
+
+impl Match {
+    pub fn text(self: Match, input: string) -> string {
+        if self.span.start < 0 || self.span.end < self.span.start
+            || self.span.end > input.byte_len()
+            || !input.is_char_boundary(self.span.start)
+            || !input.is_char_boundary(self.span.end) {
+            return ""
+        }
+        input.byte_slice(self.span.start, self.span.end)
+    }
+
+    pub fn capture(self: Match, input: string, index: isize) -> Option[string] {
+        if index < 0 || index >= self.captures.len() {
+            return Option::None
+        }
+        self.captures[index].and_then(
+            |span| if span.start < 0 || span.end < span.start || span.end > input.byte_len()
+                || !input.is_char_boundary(span.start)
+                || !input.is_char_boundary(span.end) {
+                Option::None
+            } else {
+                Option::Some(input.byte_slice(span.start, span.end))
+            },
+        )
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum RuntimeError {
+    InvalidLimits,
+    InvalidOffset,
+    InputLimit,
+    WorkLimit,
+    MatchLimit,
+    OutputLimit,
+    InvalidReplacement,
+}
+
+impl ToString for RuntimeError {
+    fn to_string(self: RuntimeError) -> string {
+        match self {
+            InvalidLimits => "invalid regexp limits",
+            InvalidOffset => "regexp offset is not a UTF-8 boundary in the input",
+            InputLimit => "regexp input byte limit exceeded",
+            WorkLimit => "regexp work limit exceeded",
+            MatchLimit => "regexp match limit exceeded",
+            OutputLimit => "regexp output byte limit exceeded",
+            InvalidReplacement => "invalid regexp replacement template",
+        }
+    }
+}
+
+pub struct Limits {
+    pub max_input_bytes: isize,
+    pub max_work: isize,
+    pub max_matches: isize,
+    pub max_output_bytes: isize,
+}
+
+impl Limits {
+    pub fn new() -> Limits {
+        Limits {
+            max_input_bytes: 1048576,
+            max_work: 10000000,
+            max_matches: 100000,
+            max_output_bytes: 16777216,
+        }
+    }
+
+    pub fn validate(self: Limits) -> Result[(), RuntimeError] {
+        if self.max_input_bytes < 0 || self.max_work < 1 || self.max_matches < 0
+            || self.max_output_bytes < 0 {
+            return Result::Err(RuntimeError::InvalidLimits)
+        }
+        Result::Ok(())
+    }
+}
+
+pub struct Regex {
+    program: syntax::Program,
+}
+
+impl Regex {
+    pub fn compile(pattern: string) -> Result[Regex, syntax::Error] {
+        Result::Ok(Regex { program: syntax::compile(pattern)? })
+    }
+
+    pub fn compile_with(pattern: string, limits: syntax::Limits) -> Result[Regex, syntax::Error] {
+        Result::Ok(Regex { program: syntax::compile_with(pattern, limits)? })
+    }
+
+    pub fn capture_count(self: Regex) -> isize {
+        self.program.capture_count
+    }
+
+    pub fn state_count(self: Regex) -> isize {
+        self.program.state_count()
+    }
+}
