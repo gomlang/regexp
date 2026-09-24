@@ -1,0 +1,5 @@
+[module]
+path = "consumer::regexp"
+
+[dependencies]
+"ecosystem::regexp" = "0.1.0"

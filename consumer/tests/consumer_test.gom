@@ -1,0 +1,8 @@
+package tests;
+
+use consumer::regexp as application;
+
+#[test]
+fn imported_regexp_syntax() -> () {
+    application::exercise();
+}
