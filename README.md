@@ -47,4 +47,16 @@ Lookarounds, backreferences, lazy or stacked quantifiers, inline flags, named ca
 
 `syntax::Limits::new()` allows 65,536 pattern bytes, 64 group levels, repeat counts up to 1,024, 1,024 captures, 16,384 parsed nodes, and 16,384 NFA states. `parse_with` and `compile_with` accept smaller or larger explicit limits within validated absolute ceilings. Compilation also bounds expansion work to eight times the state limit. These bounds prevent repeated expressions and deep nesting from exhausting the compiler.
 
-From the repository root, run `(cd ../verification && just ecosystem-test regexp)` to check formatting, library tests, the independent consumer, and a cached build.
+From the repository root, run `(cd ../verification && just ecosystem-test regexp)` to check formatting, library tests, the example and its independent downstream verification, and a cached build.
+
+## Development and examples
+
+Requires GoML 0.1.55 or newer. The `examples/basic/` example shares the root manifest. From the library root, run:
+
+```sh
+goml run --example basic
+goml test
+goml verify --timeout 300s
+```
+
+`goml test` builds the example and runs its tests. `goml verify` repeats the example checks as an independent module against an isolated registry snapshot. `(cd ../verification && just ecosystem-test regexp)` also retains the library-specific smoke and compatibility checks.

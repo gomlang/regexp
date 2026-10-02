@@ -1,6 +1,6 @@
 package tests;
 
-use consumer::regexp as application;
+use ecosystem::regexp::examples::basic as application;
 
 #[test]
 fn imported_regexp_syntax() -> () {
