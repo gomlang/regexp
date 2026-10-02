@@ -37,6 +37,18 @@ fn main() -> () {
 
 Search selects the earliest start and then the longest end at that start. Equal-span capture histories keep the first ordered NFA path. This is explicit leftmost-longest behavior, not Go's default leftmost-first submatch policy. `Match.span` and every capture span use half-open UTF-8 byte offsets. Capture zero is the whole match; an unmatched group is `None`. `Match::text` and `capture` take the original input string for extraction. `find_from_with` rejects offsets inside a UTF-8 scalar.
 
+`find_iter(input)` and `find_iter_with(input, limits)` return a lazy `Matches`
+iterator of `Result[Match, RuntimeError]`. Construction validates limits and input;
+matching starts on `next()`. All advances share one work budget and match limit,
+with the same ordering and empty-match suppression as `find_all`. Exhaustion or
+a runtime error permanently ends the iterator; an error is yielded exactly once.
+Consumers may observe earlier matches before a later error, and must check every
+result. Stopping early avoids searching the remaining input and retaining a
+vector of capture histories. The iterator retains the input string and current
+cursor, but no previously yielded matches. Assignment shares its mutable cursor
+and budget; construct another iterator for independent traversal. Serialize use
+of aliases; separate iterators can share the immutable compiled regex.
+
 The NFA keeps at most one thread per state at each input position and remembers capture tags. Epsilon cycles are visited once per position. `find_all` uses nonoverlapping matches. An empty match advances by one full Unicode scalar; an empty match immediately adjacent to the end of a preceding nonempty match is omitted. Replacement includes valid empty matches at the beginning and end. Split ignores empty delimiters at those two edges. `^`, `$`, `\A`, and `\z` assert absolute text boundaries; `\b` and `\B` compare ASCII word characters on each side.
 
 `regexp::Limits::new()` allows 1 MiB input, 10 million charged work units, 100,000 matches, and 16 MiB output. A replacement template is also limited to the input byte cap. Work includes NFA state scans, class terms, capture copies, and per-position state bookkeeping. All matches in `find_all`, replacement, and split share one work budget. That budget is additionally capped by a multiple of input bytes, program states, capture slots, and class terms. Thus an operation that would revisit long suffixes returns `WorkLimit` within a linear bound on input length for a fixed compiled program. The API does not claim every valid pattern and input pair completes under the default limits. `RuntimeError` distinguishes invalid limits and offsets from input, work, match, output, and replacement failures.

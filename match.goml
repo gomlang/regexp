@@ -320,39 +320,99 @@ impl Regex {
         Vec[Match],
         RuntimeError,
     ] {
-        validate_input(input, 0, limits)?;
-        let work = Ref::new(0);
-        let budget = work_budget(self, input, limits.max_work);
         let result: Vec[Match] = Vec::new();
-        let mut offset = 0;
-        let mut previous_end = -1;
-        loop {
-            let next = find_from(self, input, offset, budget, work)?;
-            let item = match next {
-                Some(value) => value,
-                None => break,
-            };
-            let empty = item.span.start == item.span.end;
-            if !empty || item.span.start != previous_end {
-                if result.len() >= limits.max_matches {
-                    return Result::Err(RuntimeError::MatchLimit)
-                }
-                result.push(item);
-            }
-            previous_end = item.span.end;
-            if empty {
-                if item.span.end == input.byte_len() {
-                    break;
-                }
-                offset = next_boundary(input, item.span.end);
-            } else {
-                offset = item.span.end;
-            }
+        for found in self.find_iter_with(input, limits)? {
+            result.push(found?);
         }
         Result::Ok(result)
     }
 
     pub fn find_all(self: Regex, input: string) -> Result[Vec[Match], RuntimeError] {
         self.find_all_with(input, Limits::new())
+    }
+}
+
+pub struct Matches {
+    regex: Regex,
+    input: string,
+    limits: Limits,
+    budget: isize,
+    work: Ref[isize],
+    offset: Ref[isize],
+    previous_end: Ref[isize],
+    count: Ref[isize],
+    done: Ref[bool],
+}
+
+impl Iterator for Matches {
+    type Item = Result[Match, RuntimeError];
+
+    fn next(self: Matches) -> Option[Result[Match, RuntimeError]] {
+        while !self.done.get() {
+            let item = match find_from(
+                self.regex,
+                self.input,
+                self.offset.get(),
+                self.budget,
+                self.work,
+            ) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    self.done.set(true);
+                    return Option::None
+                },
+                Err(problem) => {
+                    self.done.set(true);
+                    return Option::Some(Result::Err(problem))
+                },
+            };
+            let empty = item.span.start == item.span.end;
+            let emit = !empty || item.span.start != self.previous_end.get();
+            self.previous_end.set(item.span.end);
+            if empty {
+                if item.span.end == self.input.byte_len() {
+                    self.done.set(true);
+                } else {
+                    self.offset.set(next_boundary(self.input, item.span.end));
+                }
+            } else {
+                self.offset.set(item.span.end);
+            }
+            if emit {
+                if self.count.get() >= self.limits.max_matches {
+                    self.done.set(true);
+                    return Option::Some(Result::Err(RuntimeError::MatchLimit))
+                }
+                self.count.set(self.count.get() + 1);
+                return Option::Some(Result::Ok(item))
+            }
+        }
+        Option::None
+    }
+}
+
+impl Regex {
+    pub fn find_iter_with(self: Regex, input: string, limits: Limits) -> Result[
+        Matches,
+        RuntimeError,
+    ] {
+        validate_input(input, 0, limits)?;
+        Result::Ok(
+            Matches {
+                regex: self,
+                input,
+                limits,
+                budget: work_budget(self, input, limits.max_work),
+                work: Ref::new(0),
+                offset: Ref::new(0),
+                previous_end: Ref::new(-1),
+                count: Ref::new(0),
+                done: Ref::new(false),
+            },
+        )
+    }
+
+    pub fn find_iter(self: Regex, input: string) -> Result[Matches, RuntimeError] {
+        self.find_iter_with(input, Limits::new())
     }
 }
