@@ -33,7 +33,17 @@ fn main() -> () {
 }
 ```
 
-`Regex::compile` and `compile_with` return syntax diagnostics. `find`, `find_from_with`, and `find_all` return matches; `replace_all` expands `$0` for the entire match, `$1` through `$9`, `${n}` for larger capture numbers, and `$$` for a literal dollar sign. An unmatched optional capture expands to empty text. Invalid references and template syntax return `InvalidReplacement`. `split` returns the segments between nonoverlapping matches. Every operation has a `*_with` variant that accepts `regexp::Limits`.
+`Regex::compile` and `compile_with` return syntax diagnostics. `find`, `find_from_with`, and `find_all` return matches; `replace_all` expands `$0` for the entire match, `$1` through `$9`, `${n}` for larger capture numbers, and `$$` for a literal dollar sign. An unmatched optional capture expands to empty text. Invalid references and template syntax return `InvalidReplacement`. `split` returns the segments between nonoverlapping matches.
+`split_iter` and `split_iter_with` return a lazy `Split` iterator yielding
+`Result[string, RuntimeError]` without retaining every delimiter capture or output
+segment. It uses the same empty-delimiter edge policy as `split`, including one
+empty segment for empty input. Match/work limits apply to the whole cursor;
+`max_output_bytes` bounds the sum of yielded segment bytes. Each error is yielded
+once and permanently ends iteration. Earlier segments may already have been
+observed. An output error can precede a matching error in an unvisited suffix;
+the eager `split` keeps its existing error ordering. Iterators and returned
+substrings retain input storage. Copies share state and need serialized access;
+new iterators can share one compiled regex independently. Every operation has a `*_with` variant that accepts `regexp::Limits`.
 
 Search selects the earliest start and then the longest end at that start. Equal-span capture histories keep the first ordered NFA path. This is explicit leftmost-longest behavior, not Go's default leftmost-first submatch policy. `Match.span` and every capture span use half-open UTF-8 byte offsets. Capture zero is the whole match; an unmatched group is `None`. `Match::text` and `capture` take the original input string for extraction. `find_from_with` rejects offsets inside a UTF-8 scalar.
 

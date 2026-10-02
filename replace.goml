@@ -161,3 +161,72 @@ impl Regex {
         self.split_with(input, Limits::new())
     }
 }
+
+pub struct Split {
+    matches: Matches,
+    input: string,
+    cursor: Ref[isize],
+    bytes: Ref[isize],
+    maximum: isize,
+    done: Ref[bool],
+}
+
+impl Iterator for Split {
+    type Item = Result[string, RuntimeError];
+
+    fn next(self: Split) -> Option[Result[string, RuntimeError]] {
+        if self.done.get() {
+            return Option::None
+        }
+        loop {
+            let (end, next) = match self.matches.next() {
+                Some(Ok(found)) => {
+                    if found.span.start == found.span.end
+                        && (found.span.start == 0 || found.span.start == self.input.byte_len()) {
+                        continue
+                    };
+                    (found.span.start, found.span.end)
+                },
+                Some(Err(error)) => {
+                    self.done.set(true);
+                    return Option::Some(Result::Err(error))
+                },
+                None => {
+                    self.done.set(true);
+                    (self.input.byte_len(), self.input.byte_len())
+                },
+            };
+            let length = end - self.cursor.get();
+            if length > self.maximum - self.bytes.get() {
+                self.done.set(true);
+                return Option::Some(Result::Err(RuntimeError::OutputLimit))
+            }
+            let piece = self.input.byte_slice(self.cursor.get(), end);
+            self.cursor.set(next);
+            self.bytes.set(self.bytes.get() + length);
+            return Option::Some(Result::Ok(piece))
+        }
+    }
+}
+
+impl Regex {
+    pub fn split_iter_with(self: Regex, input: string, limits: Limits) -> Result[
+        Split,
+        RuntimeError,
+    ] {
+        Result::Ok(
+            Split {
+                matches: self.find_iter_with(input, limits)?,
+                input,
+                cursor: Ref::new(0),
+                bytes: Ref::new(0),
+                maximum: limits.max_output_bytes,
+                done: Ref::new(false),
+            },
+        )
+    }
+
+    pub fn split_iter(self: Regex, input: string) -> Result[Split, RuntimeError] {
+        self.split_iter_with(input, Limits::new())
+    }
+}
