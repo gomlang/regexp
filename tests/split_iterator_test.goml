@@ -1,0 +1,87 @@
+package tests;
+
+use ecosystem::regexp;
+use std::testing;
+use std::task;
+
+#[test]
+fn lazy_split_matches_eager_unicode_and_empty_edge_semantics() -> () {
+    for pattern in["", ",", "a*", "(é|😀)", "^|$"] {
+        let regex = testing::expect_ok(regexp::Regex::compile(pattern), "pattern");
+        for input in["", "abc", ",a,,b,", "é😀aé", "aaa"] {
+            let cursor = testing::expect_ok(regex.split_iter(input), "split");
+            let parts: Vec[string] = Vec::new();
+            for item in cursor {
+                parts.push(testing::expect_ok(item, "piece"));
+            }
+            testing::assert(parts == testing::expect_ok(regex.split(input), "eager"));
+            testing::assert_none(cursor.next());
+        }
+    }
+}
+
+#[test]
+fn split_limits_are_cumulative_and_failure_is_fused() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile(","), "regex");
+    let cursor = testing::expect_ok(
+        regex.split_iter_with(
+            "abc,def",
+            regexp::Limits { max_output_bytes: 3, ..regexp::Limits::new() },
+        ),
+        "split",
+    );
+    let alias = cursor;
+    testing::assert_eq(
+        testing::expect_ok(testing::expect_some(cursor.next(), "first"), "piece"),
+        "abc",
+    );
+    testing::assert_eq(
+        testing::expect_err(testing::expect_some(alias.next(), "error"), "limit"),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_none(cursor.next());
+    let matches = testing::expect_ok(
+        regex.split_iter_with("a,b,c", regexp::Limits { max_matches: 1, ..regexp::Limits::new() }),
+        "split",
+    );
+    testing::assert_ok(testing::expect_some(matches.next(), "first"));
+    testing::assert_eq(
+        testing::expect_err(testing::expect_some(matches.next(), "error"), "limit"),
+        regexp::RuntimeError::MatchLimit,
+    );
+    testing::assert_none(matches.next());
+    let work = testing::expect_ok(
+        regex.split_iter_with("abc", regexp::Limits { max_work: 1, ..regexp::Limits::new() }),
+        "lazy",
+    );
+    testing::assert_eq(
+        testing::expect_err(testing::expect_some(work.next(), "error"), "limit"),
+        regexp::RuntimeError::WorkLimit,
+    );
+    testing::assert_none(work.next());
+}
+
+#[test]
+fn independent_split_cursors_can_run_in_parallel() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile(","), "regex");
+    task::scope(
+        |scope| {
+            let results: Channel[isize] = Channel::new(4);
+            for _ in 0..4 {
+                scope.spawn(
+                    |_| {
+                        let mut count = 0;
+                        for piece in testing::expect_ok(regex.split_iter("a,é,😀"), "split") {
+                            testing::assert_ok(piece);
+                            count += 1;
+                        }
+                        results.send(count);
+                    },
+                );
+            }
+            for _ in 0..4 {
+                testing::assert_eq(testing::expect_some(results.recv(), "result"), 3);
+            }
+        },
+    );
+}

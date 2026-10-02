@@ -22,3 +22,13 @@ fn downstream_streams_captures_without_materializing_all_matches() -> () {
     }
     testing::assert(captures == Vec::from_array(["12", "34"]));
 }
+
+#[test]
+fn downstream_lazy_split_handles_unicode_fields() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("[ ,]+"), "regex");
+    let fields: Vec[string] = Vec::new();
+    for field in testing::expect_ok(regex.split_iter("a, é 😀"), "split") {
+        fields.push(testing::expect_ok(field, "field"));
+    }
+    testing::assert(fields == Vec::from_array(["a", "é", "😀"]));
+}
