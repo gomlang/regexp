@@ -1,0 +1,126 @@
+package tests;
+
+use ecosystem::regexp;
+use std::testing;
+use std::task;
+
+#[test]
+fn match_iterators_preserve_unicode_captures_and_empty_match_policy() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(é*)"), "compile");
+    let input = "é😀é";
+    let matches = testing::expect_ok(regex.find_iter(input), "iterator");
+    let first = testing::expect_ok(testing::expect_some(matches.next(), "first"), "match");
+    testing::assert_eq(first.span, regexp::Span { start: 0, end: 2 });
+    testing::assert_eq(testing::expect_some(first.capture(input, 1), "capture"), "é");
+    let second = testing::expect_ok(testing::expect_some(matches.next(), "second"), "match");
+    testing::assert_eq(second.span, regexp::Span { start: 6, end: 8 });
+    testing::assert_none(matches.next());
+    testing::assert_none(matches.next());
+    let empty = testing::expect_ok(regexp::Regex::compile(""), "empty");
+    let matches = testing::expect_ok(empty.find_iter("😀"), "iterator");
+    for offset in[0, 4] {
+        testing::assert_eq(
+            testing::expect_ok(testing::expect_some(matches.next(), "empty match"), "match").span,
+            regexp::Span { start: offset, end: offset },
+        );
+    }
+    testing::assert_none(matches.next());
+}
+
+#[test]
+fn iterator_limits_are_shared_and_errors_are_fused() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "compile");
+    let cursor = testing::expect_ok(
+        regex.find_iter_with("aaa", regexp::Limits { max_matches: 1, ..regexp::Limits::new() }),
+        "cursor",
+    );
+    let alias = cursor;
+    testing::assert_ok(testing::expect_some(cursor.next(), "first"));
+    testing::assert_eq(
+        testing::expect_err(testing::expect_some(alias.next(), "limit"), "error"),
+        regexp::RuntimeError::MatchLimit,
+    );
+    testing::assert_none(cursor.next());
+    testing::assert_none(alias.next());
+    let independent = testing::expect_ok(regex.find_iter("aaa"), "independent");
+    testing::assert_eq(
+        testing::expect_ok(testing::expect_some(independent.next(), "first"), "match").span.start,
+        0,
+    );
+    let limited = testing::expect_ok(
+        regex.find_iter_with("aaa", regexp::Limits { max_work: 1, ..regexp::Limits::new() }),
+        "lazy construction",
+    );
+    testing::assert_eq(
+        testing::expect_err(testing::expect_some(limited.next(), "budget"), "error"),
+        regexp::RuntimeError::WorkLimit,
+    );
+    testing::assert_none(limited.next());
+    testing::assert_err(
+        regex.find_iter_with("a", regexp::Limits { max_input_bytes: 0, ..regexp::Limits::new() }),
+    );
+    testing::assert_err(
+        regex.find_iter_with("a", regexp::Limits { max_work: 0, ..regexp::Limits::new() }),
+    );
+    let absent = testing::expect_ok(
+        regex.find_iter_with("", regexp::Limits { max_matches: 0, ..regexp::Limits::new() }),
+        "no matches",
+    );
+    testing::assert_none(absent.next());
+}
+
+#[test]
+fn iterator_work_is_not_replenished_between_matches() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "compile");
+    let limits = regexp::Limits { max_work: 100, ..regexp::Limits::new() };
+    testing::assert_some(
+        testing::expect_ok(regex.find_with("a".repeat(100), limits), "first match"),
+    );
+    let cursor = testing::expect_ok(regex.find_iter_with("a".repeat(100), limits), "iterator");
+    let mut accepted = 0;
+    let mut exhausted = false;
+    while let Some(found) = cursor.next() {
+        match found {
+            Ok(_) => {
+                accepted += 1;
+            },
+            Err(error) => {
+                testing::assert_eq(error, regexp::RuntimeError::WorkLimit);
+                exhausted = true;
+            },
+        }
+    }
+    testing::assert(accepted > 0 && accepted < 100 && exhausted);
+    testing::assert_none(cursor.next());
+}
+
+#[test]
+fn independent_match_iterators_share_compiled_program_in_parallel() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(é)"), "compile");
+    task::scope(
+        |scope| {
+            let results: Channel[bool] = Channel::new(4);
+            for _ in 0..4 {
+                scope.spawn(
+                    |_| {
+                        let input = "é😀é";
+                        let cursor = testing::expect_ok(regex.find_iter(input), "iterator");
+                        let mut count = 0;
+                        for found in cursor {
+                            let found = testing::expect_ok(found, "match");
+                            testing::assert_eq(
+                                testing::expect_some(found.capture(input, 1), "capture"),
+                                "é",
+                            );
+                            count += 1;
+                        }
+                        results.send(count == 2);
+                    },
+                );
+            }
+            for _ in 0..4 {
+                testing::assert(testing::expect_some(results.recv(), "worker"));
+            }
+        },
+    );
+}

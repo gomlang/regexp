@@ -1,8 +1,24 @@
 package tests;
 
 use ecosystem::regexp::examples::basic as application;
+use ecosystem::regexp;
+use std::testing;
 
 #[test]
 fn imported_regexp_syntax() -> () {
     application::exercise();
+}
+
+#[test]
+fn downstream_streams_captures_without_materializing_all_matches() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("([0-9]+)"), "compile");
+    let input = "a12 b34";
+    let cursor = testing::expect_ok(regex.find_iter(input), "iterator");
+    let captures: Vec[string] = Vec::new();
+    for found in cursor {
+        captures.push(
+            testing::expect_some(testing::expect_ok(found, "match").capture(input, 1), "capture"),
+        );
+    }
+    testing::assert(captures == Vec::from_array(["12", "34"]));
 }
