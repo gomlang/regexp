@@ -32,3 +32,12 @@ fn downstream_lazy_split_handles_unicode_fields() -> () {
     }
     testing::assert(fields == Vec::from_array(["a", "é", "😀"]));
 }
+
+#[test]
+fn downstream_literal_replacement_accepts_user_supplied_dollars() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("[0-9]+"), "regex");
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all_literal("price=42", "$1😀"), "literal"),
+        "price=$1😀",
+    );
+}

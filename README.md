@@ -33,7 +33,19 @@ fn main() -> () {
 }
 ```
 
-`Regex::compile` and `compile_with` return syntax diagnostics. `find`, `find_from_with`, and `find_all` return matches; `replace_all` expands `$0` for the entire match, `$1` through `$9`, `${n}` for larger capture numbers, and `$$` for a literal dollar sign. An unmatched optional capture expands to empty text. Invalid references and template syntax return `InvalidReplacement`. `split` returns the segments between nonoverlapping matches.
+`Regex::compile` and `compile_with` return syntax diagnostics. `find`,
+`find_from_with`, and `find_all` return matches. `replace_all` expands `$0` for
+the entire match, `$1` through `$9`, `${n}` for larger capture numbers, and `$$`
+for a literal dollar sign. An unmatched optional capture expands to empty text.
+Invalid references and template syntax return `InvalidReplacement`.
+
+`replace_all_literal` and `replace_all_literal_with` insert replacement text exactly,
+so `$1`, `${n}`, `$$` and backslashes have no template meaning. They use the same
+match selection, empty-match policy, shared work/match limits and bounded output
+as template replacement. The literal replacement itself obeys `max_input_bytes`;
+it is not expanded or escaped before this check.
+
+`split` returns the segments between nonoverlapping matches.
 `split_iter` and `split_iter_with` return a lazy `Split` iterator yielding
 `Result[string, RuntimeError]` without retaining every delimiter capture or output
 segment. It uses the same empty-delimiter edge policy as `split`, including one

@@ -92,6 +92,31 @@ impl Regex {
             return Result::Err(RuntimeError::InputLimit)
         }
         let parts = replacement_parts(replacement, self.capture_count())?;
+        self.replace_parts(input, parts, limits)
+    }
+
+    pub fn replace_all_literal_with(self: Regex, input: string, replacement: string, limits: Limits) -> Result[
+        string,
+        RuntimeError,
+    ] {
+        limits.validate()?;
+        if replacement.byte_len() > limits.max_input_bytes {
+            return Result::Err(RuntimeError::InputLimit)
+        }
+        self.replace_parts(input, Vec::from_array([ReplacementPart::Literal(replacement)]), limits)
+    }
+
+    pub fn replace_all_literal(self: Regex, input: string, replacement: string) -> Result[
+        string,
+        RuntimeError,
+    ] {
+        self.replace_all_literal_with(input, replacement, Limits::new())
+    }
+
+    fn replace_parts(self: Regex, input: string, parts: Vec[ReplacementPart], limits: Limits) -> Result[
+        string,
+        RuntimeError,
+    ] {
         let matches = self.find_all_with(input, limits)?;
         let output = text::StringBuilder::new();
         let mut cursor = 0;

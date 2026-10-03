@@ -1,0 +1,113 @@
+package tests;
+
+use ecosystem::regexp;
+use std::testing;
+
+#[test]
+fn literal_replacement_keeps_dollars_backslashes_and_unicode() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(a+)"), "compile");
+    for replacement in["$", "$1", "${99}", "$$", "\\$😀", ""] {
+        testing::assert_eq(
+            testing::expect_ok(regex.replace_all_literal("éaa:a!", replacement), "literal"),
+            "é" + replacement + ":" + replacement + "!",
+        );
+    }
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all("aa", "$1"), "template unchanged"),
+        "aa",
+    );
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all_literal("none", "$"), "no matches"),
+        "none",
+    );
+    let empty = testing::expect_ok(regexp::Regex::compile(""), "empty regex");
+    testing::assert_eq(
+        testing::expect_ok(empty.replace_all_literal("é😀", "$"), "empty matches"),
+        "$é$😀$",
+    );
+    testing::assert_eq(testing::expect_ok(empty.replace_all_literal("", "$"), "empty input"), "$");
+    let greedy = testing::expect_ok(regexp::Regex::compile("a*"), "greedy");
+    testing::assert_eq(
+        testing::expect_ok(greedy.replace_all_literal("aab", "$"), "adjacent empty"),
+        "$b$",
+    );
+}
+
+#[test]
+fn literal_replacement_honors_shared_match_work_input_and_output_limits() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "compile");
+    let bounded = regexp::Limits { max_output_bytes: 4, ..regexp::Limits::new() };
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all_literal_with("aa", "é", bounded), "exact fit"),
+        "éé",
+    );
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all_literal_with("aaa", "é", bounded), "output cap"),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_literal_with("untouched", "", bounded),
+            "unmatched output",
+        ),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_ok(
+            regex.replace_all_literal_with(
+                "aa",
+                "",
+                regexp::Limits { max_output_bytes: 0, ..bounded },
+            ),
+            "deletion",
+        ),
+        "",
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_literal_with(
+                "a",
+                "$$",
+                regexp::Limits { max_input_bytes: 1, ..bounded },
+            ),
+            "replacement cap",
+        ),
+        regexp::RuntimeError::InputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_ok(
+            regex.replace_all_literal_with(
+                "a",
+                "$",
+                regexp::Limits { max_input_bytes: 1, ..bounded },
+            ),
+            "no escaped expansion",
+        ),
+        "$",
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_literal_with("aa", "", regexp::Limits { max_matches: 1, ..bounded }),
+            "match cap",
+        ),
+        regexp::RuntimeError::MatchLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_literal_with("aa", "", regexp::Limits { max_work: 1, ..bounded }),
+            "work cap",
+        ),
+        regexp::RuntimeError::WorkLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_literal_with(
+                "a",
+                "",
+                regexp::Limits { max_output_bytes: -1, ..bounded },
+            ),
+            "invalid cap",
+        ),
+        regexp::RuntimeError::InvalidLimits,
+    );
+}
