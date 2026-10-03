@@ -45,6 +45,20 @@ match selection, empty-match policy, shared work/match limits and bounded output
 as template replacement. The literal replacement itself obeys `max_input_bytes`;
 it is not expanded or escaped before this check.
 
+`replace_all_fn(input, callback)` computes literal replacement text from each
+`Match`; capture extraction still takes the original input. The fallible
+`try_replace_all_fn` accepts `(Match) -> Result[string, E]` and returns
+`ReplaceError[E]`, distinguishing `Runtime(RuntimeError)` from `Callback(E)`.
+Both have `*_with` variants taking `Limits` as the last argument. Callbacks run
+synchronously once per visited match, in input order; panics propagate unchanged.
+Matching is lazy and shares one work/match budget. A callback or output failure
+stops immediately; earlier callback side effects are not rolled back, and no
+partial output is returned. An oversized unmatched prefix fails before invoking
+that match's callback. Returned text is charged to `max_output_bytes` including
+UTF-8 bytes; `max_input_bytes` bounds the searched input, not computed text.
+Callback work and allocation are caller-controlled. Empty matches use the same
+Unicode advancement and adjacent-empty suppression as `find_iter`.
+
 `split` returns the segments between nonoverlapping matches.
 `split_iter` and `split_iter_with` return a lazy `Split` iterator yielding
 `Result[string, RuntimeError]` without retaining every delimiter capture or output

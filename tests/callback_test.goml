@@ -1,0 +1,171 @@
+package tests;
+
+use ecosystem::regexp;
+use std::panic;
+use std::testing;
+
+#[test]
+fn computed_replacements_receive_captures_and_insert_literal_text_in_order() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(é)(x)?"), "regex");
+    let input = "!é?éx";
+    let starts = Vec::new();
+    let result = testing::expect_ok(
+        regex.replace_all_fn(
+            input,
+            |found| {
+                starts.push(found.span.start);
+                "$" + found.capture(input, 1).unwrap_or("") + found.capture(input, 2).unwrap_or("-")
+            },
+        ),
+        "computed text",
+    );
+    testing::assert_eq(result, "!$é-?$éx");
+    testing::assert(starts == Vec::from_array([1, 4]));
+    let empty = testing::expect_ok(regexp::Regex::compile(""), "empty");
+    testing::assert_eq(
+        testing::expect_ok(
+            empty.replace_all_fn("é😀", |found| f"{found.span.start}"),
+            "UTF8 positions",
+        ),
+        "0é2😀6",
+    );
+    let greedy = testing::expect_ok(regexp::Regex::compile("a*"), "greedy");
+    testing::assert_eq(
+        testing::expect_ok(greedy.replace_all_fn("aab", |_| "$1"), "empty suppression"),
+        "$1b$1",
+    );
+}
+
+#[test]
+fn callback_errors_and_panics_stop_without_later_invocations() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "regex");
+    let calls = Ref::new(0);
+    let result = regex.try_replace_all_fn(
+        "aaa",
+        |_| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                Result::Err(42)
+            } else {
+                Result::Ok("x")
+            }
+        },
+    );
+    testing::assert_eq(
+        testing::expect_err(result, "callback failure"),
+        regexp::ReplaceError::Callback(42),
+    );
+    testing::assert_eq(calls.get(), 2);
+    calls.set(0);
+    let caught = testing::expect_err(
+        panic::catch(
+            || regex.replace_all_fn(
+                "aaa",
+                |_| {
+                    calls.set(calls.get() + 1);
+                    panic::raise("callback panic")
+                },
+            ),
+        ),
+        "panic",
+    );
+    testing::assert_eq(caught.message(), "callback panic");
+    testing::assert_eq(calls.get(), 1);
+}
+
+#[test]
+fn callback_output_limits_charge_utf8_prefix_tail_and_returned_text() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "regex");
+    let calls = Ref::new(0);
+    let callback = |_| {
+        calls.set(calls.get() + 1);
+        "é"
+    };
+    let limits = regexp::Limits { max_output_bytes: 4, ..regexp::Limits::new() };
+    testing::assert_eq(
+        testing::expect_ok(regex.replace_all_fn_with("aa", callback, limits), "exact bytes"),
+        "éé",
+    );
+    calls.set(0);
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all_fn_with("aaaa", callback, limits), "output"),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_eq(calls.get(), 3);
+    calls.set(0);
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all_fn_with("12345a", callback, limits), "prefix"),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_eq(calls.get(), 0);
+    testing::assert_eq(
+        testing::expect_err(regex.replace_all_fn_with("12345", callback, limits), "tail"),
+        regexp::RuntimeError::OutputLimit,
+    );
+    testing::assert_eq(calls.get(), 0);
+    testing::assert_eq(
+        testing::expect_ok(
+            regex.replace_all_fn_with(
+                "aa",
+                |_| "",
+                regexp::Limits { max_output_bytes: 0, ..limits },
+            ),
+            "delete",
+        ),
+        "",
+    );
+    testing::assert_eq(
+        testing::expect_ok(
+            regex.replace_all_fn_with(
+                "a",
+                |_| "123",
+                regexp::Limits { max_input_bytes: 1, ..limits },
+            ),
+            "returned bytes use output cap",
+        ),
+        "123",
+    );
+}
+
+#[test]
+fn callback_matching_budgets_remain_shared_and_validate_before_callbacks() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("a"), "regex");
+    let calls = Ref::new(0);
+    let callback = |_| {
+        calls.set(calls.get() + 1);
+        ""
+    };
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_fn_with(
+                "aaa",
+                callback,
+                regexp::Limits { max_matches: 1, ..regexp::Limits::new() },
+            ),
+            "matches",
+        ),
+        regexp::RuntimeError::MatchLimit,
+    );
+    testing::assert_eq(calls.get(), 1);
+    calls.set(0);
+    for limits in[
+        regexp::Limits { max_work: 1, ..regexp::Limits::new() },
+        regexp::Limits { max_input_bytes: 0, ..regexp::Limits::new() },
+        regexp::Limits { max_output_bytes: -1, ..regexp::Limits::new() },
+    ] {
+        testing::assert_err(regex.replace_all_fn_with("a", callback, limits));
+        testing::assert_eq(calls.get(), 0);
+    }
+    testing::assert_eq(
+        testing::expect_err(
+            regex.replace_all_fn_with(
+                "a".repeat(100),
+                callback,
+                regexp::Limits { max_work: 100, ..regexp::Limits::new() },
+            ),
+            "shared work",
+        ),
+        regexp::RuntimeError::WorkLimit,
+    );
+    testing::assert(calls.get() > 0 && calls.get() < 100);
+}

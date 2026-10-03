@@ -1,0 +1,74 @@
+package regexp;
+
+use std::text;
+
+#[derive(Debug, PartialEq)]
+pub enum ReplaceError[E] {
+    Runtime(RuntimeError),
+    Callback(E),
+}
+
+impl Regex {
+    pub fn try_replace_all_fn_with[E](
+        self: Regex,
+        input: string,
+        replacement: (Match) -> Result[string, E],
+        limits: Limits,
+    ) -> Result[string, ReplaceError[E]] {
+        let runtime: (RuntimeError) -> ReplaceError[E] = |error| ReplaceError::Runtime(error);
+        let matches = self.find_iter_with(input, limits).map_err(runtime)?;
+        let output = text::StringBuilder::new();
+        let mut cursor = 0;
+        while let Some(found) = matches.next() {
+            let found = found.map_err(runtime)?;
+            append_bounded(
+                output,
+                input.byte_slice(cursor, found.span.start),
+                limits.max_output_bytes,
+            ).map_err(runtime)?;
+            let value = replacement(found).map_err(|error| ReplaceError::Callback(error))?;
+            append_bounded(output, value, limits.max_output_bytes).map_err(runtime)?;
+            cursor = found.span.end;
+        }
+        append_bounded(output, input.byte_slice(cursor, input.byte_len()), limits.max_output_bytes).map_err(
+            runtime,
+        )?;
+        Result::Ok(output.finish())
+    }
+
+    pub fn try_replace_all_fn[E](
+        self: Regex,
+        input: string,
+        replacement: (Match) -> Result[string, E],
+    ) -> Result[string, ReplaceError[E]] {
+        self.try_replace_all_fn_with(input, replacement, Limits::new())
+    }
+
+    pub fn replace_all_fn_with(
+        self: Regex,
+        input: string,
+        replacement: (Match) -> string,
+        limits: Limits,
+    ) -> Result[string, RuntimeError] {
+        self.try_replace_all_fn_with(
+            input,
+            |found| {
+                let value: Result[string, RuntimeError] = Result::Ok(replacement(found));
+                value
+            },
+            limits,
+        ).map_err(
+            |error| match error {
+                ReplaceError::Runtime(error) => error,
+                ReplaceError::Callback(error) => error,
+            },
+        )
+    }
+
+    pub fn replace_all_fn(self: Regex, input: string, replacement: (Match) -> string) -> Result[
+        string,
+        RuntimeError,
+    ] {
+        self.replace_all_fn_with(input, replacement, Limits::new())
+    }
+}

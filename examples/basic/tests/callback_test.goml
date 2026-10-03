@@ -1,0 +1,31 @@
+package tests;
+
+use ecosystem::regexp;
+use std::testing;
+
+#[test]
+fn downstream_can_compute_replacements_and_preserve_application_errors() -> () {
+    let regex = testing::expect_ok(regexp::Regex::compile("(x+)"), "compile");
+    let input = "xx+x";
+    testing::assert_eq(
+        testing::expect_ok(
+            regex.replace_all_fn(
+                input,
+                |found| f"${found.capture(input, 1).unwrap_or("").byte_len()}",
+            ),
+            "replace",
+        ),
+        "$2+$1",
+    );
+    let error = regex.try_replace_all_fn(
+        input,
+        |_| {
+            let value: Result[string, string] = Result::Err("stop");
+            value
+        },
+    );
+    testing::assert_eq(
+        testing::expect_err(error, "application error"),
+        regexp::ReplaceError::Callback("stop"),
+    );
+}
