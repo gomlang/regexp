@@ -7,13 +7,16 @@
 "ecosystem::regexp" = "0.1.0"
 ```
 
-```gom
+```goml
+package main;
+
 use ecosystem::regexp::syntax;
+use std::testing;
 
 fn main() -> () {
-    let parsed = syntax::parse("^(go|goml)[0-9]+$").unwrap();
+    let parsed = testing::expect_ok(syntax::parse("^(go|goml)[0-9]+$"), "parse");
     println(parsed.capture_count.to_string());
-    let program = syntax::compile("^(go|goml)[0-9]+$").unwrap();
+    let program = testing::expect_ok(syntax::compile("^(go|goml)[0-9]+$"), "compile");
     println(program.state_count().to_string());
 }
 ```
@@ -22,14 +25,20 @@ fn main() -> () {
 
 ## Matching
 
-```gom
+```goml
+package main;
+
 use ecosystem::regexp;
+use std::testing;
 
 fn main() -> () {
-    let regex = regexp::Regex::compile("(go|goml)[0-9]+").unwrap();
-    let found = regex.find("try goml42").unwrap().unwrap();
+    let regex = testing::expect_ok(regexp::Regex::compile("(go|goml)[0-9]+"), "compile");
+    let found = testing::expect_some(
+        testing::expect_ok(regex.find("try goml42"), "find"),
+        "match",
+    );
     println(found.text("try goml42"));
-    println(regex.replace_all("go1 goml42", "[$1]").unwrap());
+    println(testing::expect_ok(regex.replace_all("go1 goml42", "[$1]"), "replace"));
 }
 ```
 
